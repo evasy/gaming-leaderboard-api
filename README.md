@@ -6,6 +6,11 @@ from a single submission.
 
 [![CI](https://github.com/evasy/gaming-leaderboard-api/actions/workflows/ci.yml/badge.svg)](https://github.com/evasy/gaming-leaderboard-api/actions/workflows/ci.yml)
 
+**Live:** <https://leaderboard-api-juove.ondigitalocean.app> · [interactive docs](https://leaderboard-api-juove.ondigitalocean.app/docs) · [health](https://leaderboard-api-juove.ondigitalocean.app/readyz) · [metrics](https://leaderboard-api-juove.ondigitalocean.app/metrics)
+
+Deployed on DigitalOcean App Platform: 2 instances behind a managed load
+balancer, backed by a managed Valkey cluster.
+
 > **Architecture, trade-offs and scaling notes live in
 > [`docs/architecture.md`](docs/architecture.md).** Start there for the "why".
 
@@ -309,7 +314,7 @@ survives — the race that motivated the Lua script.
 Beyond the unit suite:
 
 ```bash
-./scripts/smoke.sh https://your-app.ondigitalocean.app   # deployed-artifact checks
+./scripts/smoke.sh https://leaderboard-api-juove.ondigitalocean.app   # deployed-artifact checks
 make bench BASE_URL=http://localhost:8080                # latency percentiles
 ```
 
@@ -373,8 +378,9 @@ before anything ships. `main` deploys only when all of that is green.
 ```bash
 doctl auth init
 
-# 1. Managed Redis for leaderboard state
-doctl databases create leaderboard-redis --engine redis --size db-s-1vcpu-1gb --region nyc
+# 1. Managed Valkey for leaderboard state
+doctl databases create leaderboard-redis --engine valkey \
+  --size db-s-1vcpu-1gb --region nyc3 --num-nodes 1
 
 # 2. Create the app from the spec (it already points at this repo;
 #    change the `github.repo` field if you forked it)
@@ -382,7 +388,7 @@ doctl apps create --spec .do/app.yaml
 
 # 3. Verify the deployed artifact
 doctl apps list
-./scripts/smoke.sh https://<your-app>.ondigitalocean.app
+./scripts/smoke.sh https://leaderboard-api-juove.ondigitalocean.app
 ```
 
 The spec ([`.do/app.yaml`](.do/app.yaml)) autoscales from two instances to six

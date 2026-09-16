@@ -3,9 +3,9 @@
 # Deploy:      doctl apps create   --spec .do/app.yaml
 # Update:      doctl apps update <APP_ID> --spec .do/app.yaml
 #
-# The service is stateless; all leaderboard state lives in the managed Redis
-# (Valkey) cluster referenced below, which is what makes `instance_count > 1`
-# and zero-downtime redeploys safe.
+# The service is stateless; all leaderboard state lives in the managed Valkey
+# cluster referenced below, which is what makes horizontal scaling and
+# zero-downtime redeploys safe.
 name: leaderboard-api
 region: nyc
 
@@ -20,6 +20,20 @@ services:
 
     http_port: 8080
     instance_size_slug: apps-s-1vcpu-1gb
+    # Two instances, so a rolling deploy never drops to zero capacity and the
+    # "the API tier is stateless" claim is actually exercised rather than
+    # asserted. Scaling out is a number change precisely because no request
+    # depends on which instance served the previous one.
+    #
+    # CPU-metric autoscaling is the preferred setup but App Platform only
+    # permits it on dedicated instances (apps-d-*); on the basic tier the spec
+    # is rejected. The upgrade path is to swap the slug and replace
+    # instance_count with:
+    #   autoscaling:
+    #     min_instance_count: 2
+    #     max_instance_count: 6
+    #     metrics: {cpu: {percent: 70}}
+    instance_count: 2
 
     health_check:
       # readyz fails when Redis is unreachable, so App Platform will hold
@@ -30,9 +44,6 @@ services:
       timeout_seconds: 3
       success_threshold: 1
       failure_threshold: 3
-
-    routes:
-      - path: /
 
     envs:
       - key: LEADERBOARD_ENVIRONMENT
@@ -52,21 +63,16 @@ services:
         scope: RUN_TIME
         value: ${leaderboard-redis.DATABASE_URL}
 
-    # Scale on CPU: the workload is network- and CPU-bound, not memory-bound.
-    # The floor of 2 means a rolling deploy never drops to zero capacity.
-    # (autoscaling replaces instance_count; setting both is rejected.)
-    autoscaling:
-      min_instance_count: 2
-      max_instance_count: 6
-      metrics:
-        cpu:
-          percent: 70
 
-# Managed Redis/Valkey. Create it once, then App Platform binds the DSN:
-#   doctl databases create leaderboard-redis --engine redis --size db-s-1vcpu-1gb --region nyc
+# Managed Valkey (DigitalOcean's Redis-compatible offering). Create it once,
+# then App Platform injects the DSN into LEADERBOARD_REDIS_URL above:
+#   doctl databases create leaderboard-redis --engine valkey \
+#     --size db-s-1vcpu-1gb --region nyc3 --num-nodes 1
+# Defaults are already correct for a leaderboard: noeviction (players are never
+# dropped under memory pressure) and RDB persistence.
 databases:
   - name: leaderboard-redis
-    engine: REDIS
+    engine: VALKEY
     production: true
     cluster_name: leaderboard-redis
 
@@ -74,6 +80,8 @@ alerts:
   - rule: DEPLOYMENT_FAILED
   - rule: DOMAIN_FAILED
 
+# Routing lives here rather than in the component's own `routes` block;
+# App Platform rejects a spec that sets both.
 ingress:
   rules:
     - match:
