@@ -14,9 +14,15 @@ services:
     dockerfile_path: Dockerfile
     source_dir: /
     github:
-      repo: evasy/gaming-leaderboard-api      # set to <owner>/<repo>
+      repo: evasy/gaming-leaderboard-api
       branch: main
-      deploy_on_push: true
+      # Deliberately off. App Platform's native auto-deploy fires the moment a
+      # commit lands, in parallel with CI -- so a commit that fails tests would
+      # still reach production. Deployment is instead driven by the `deploy`
+      # job in .github/workflows/ci.yml, which runs `doctl apps
+      # create-deployment` only after lint, types, the test matrix and the
+      # image smoke test have all gone green.
+      deploy_on_push: false
 
     http_port: 8080
     instance_size_slug: apps-s-1vcpu-1gb
