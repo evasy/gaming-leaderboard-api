@@ -1,5 +1,13 @@
 # Architecture
 
+> **A note on naming.** DigitalOcean has replaced its managed Redis product with
+> **Valkey**, the Redis fork, and Valkey 8 is what is deployed here. Valkey
+> speaks the Redis wire protocol and the same commands, so the client library
+> is `redis-py`, the config key is `LEADERBOARD_REDIS_URL`, and `/readyz`
+> reports `backend: "redis"`. Throughout this document **"Redis" refers to the
+> protocol and data structures**; **"Valkey" refers to the specific managed
+> service** running them.
+
 ## 1. System context
 
 ```mermaid
@@ -17,7 +25,7 @@ flowchart LR
     end
 
     subgraph data["State"]
-        redis[("Managed Redis / Valkey<br/>sorted sets")]
+        redis[("Managed Valkey 8<br/>Redis-compatible<br/>sorted sets")]
     end
 
     game  --> lb
@@ -48,7 +56,7 @@ sequenceDiagram
     participant V as Pydantic schema
     participant S as LeaderboardService
     participant T as LeaderboardStore
-    participant D as Redis
+    participant D as Valkey
 
     C->>M: POST /v1/games/{game}/scores
     M->>M: assign X-Request-ID, start timer
