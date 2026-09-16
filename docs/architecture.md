@@ -19,7 +19,7 @@ flowchart LR
     end
 
     subgraph edge["DigitalOcean App Platform"]
-        lb["HTTPS load balancer<br/>managed TLS"]
+        lb["App Platform edge<br/>Cloudflare + DO router<br/>managed TLS, HTTP to HTTPS"]
         api1["leaderboard-api #1<br/>(stateless)"]
         api2["leaderboard-api #2<br/>(stateless)"]
     end
@@ -288,6 +288,14 @@ flowchart LR
 
 Health checks target `/readyz`, which fails when Redis is unreachable — so a
 broken instance never receives traffic during a rollout.
+
+Nothing at the edge was provisioned by hand. App Platform fronts the app with
+Cloudflare, terminates TLS with an auto-renewed certificate, redirects HTTP to
+HTTPS, and routes across the running instances. Note that this is *not* a
+DigitalOcean Load Balancer — that is a separate product for Droplets, and there
+is none in this account. The practical consequence is that edge concerns like
+per-client rate limiting belong here rather than in the application, which is
+why §9 lists rate limiting as deliberately out of scope.
 
 App Platform's own `deploy_on_push` is switched off on purpose: it triggers the
 moment a commit lands, concurrently with CI, which would let a failing commit
