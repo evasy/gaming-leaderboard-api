@@ -1,0 +1,83 @@
+# DigitalOcean App Platform specification.
+#
+# Deploy:      doctl apps create   --spec .do/app.yaml
+# Update:      doctl apps update <APP_ID> --spec .do/app.yaml
+#
+# The service is stateless; all leaderboard state lives in the managed Redis
+# (Valkey) cluster referenced below, which is what makes `instance_count > 1`
+# and zero-downtime redeploys safe.
+name: leaderboard-api
+region: nyc
+
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: evasy/gaming-leaderboard-api      # set to <owner>/<repo>
+      branch: main
+      deploy_on_push: true
+
+    http_port: 8080
+    instance_size_slug: apps-s-1vcpu-1gb
+
+    health_check:
+      # readyz fails when Redis is unreachable, so App Platform will hold
+      # traffic off an instance that cannot actually serve it.
+      http_path: /readyz
+      initial_delay_seconds: 10
+      period_seconds: 10
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3
+
+    routes:
+      - path: /
+
+    envs:
+      - key: LEADERBOARD_ENVIRONMENT
+        value: production
+      - key: LEADERBOARD_STORE_BACKEND
+        value: redis
+      - key: LEADERBOARD_LOG_FORMAT
+        value: json
+      - key: LEADERBOARD_LOG_LEVEL
+        value: INFO
+      - key: LEADERBOARD_DOCS_ENABLED
+        value: "true"
+      - key: WEB_CONCURRENCY
+        value: "2"
+      # Bound to the managed database below; App Platform injects the real DSN.
+      - key: LEADERBOARD_REDIS_URL
+        scope: RUN_TIME
+        value: ${leaderboard-redis.DATABASE_URL}
+
+    # Scale on CPU: the workload is network- and CPU-bound, not memory-bound.
+    # The floor of 2 means a rolling deploy never drops to zero capacity.
+    # (autoscaling replaces instance_count; setting both is rejected.)
+    autoscaling:
+      min_instance_count: 2
+      max_instance_count: 6
+      metrics:
+        cpu:
+          percent: 70
+
+# Managed Redis/Valkey. Create it once, then App Platform binds the DSN:
+#   doctl databases create leaderboard-redis --engine redis --size db-s-1vcpu-1gb --region nyc
+databases:
+  - name: leaderboard-redis
+    engine: REDIS
+    production: true
+    cluster_name: leaderboard-redis
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /
+      component:
+        name: api
