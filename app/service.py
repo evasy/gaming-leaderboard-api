@@ -102,8 +102,9 @@ class LeaderboardService:
                 ttl_seconds=self._settings.idempotency_ttl_seconds,
             )
             if not fresh:
-                # A retry of a submission we already applied. Report current
-                # standings rather than double-counting an INCREMENT.
+                # A replay of a submission already applied under this key.
+                # Report the current standing and perform no write, so a
+                # redelivery whose payload has drifted cannot move the board.
                 logger.info(
                     "submission_deduplicated",
                     game_id=game_id,

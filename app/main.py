@@ -22,7 +22,8 @@ from app.store.factory import build_store
 DESCRIPTION = """
 A REST API for real-time global gaming leaderboards.
 
-* **Submit scores** with `best` / `absolute` / `increment` semantics and optional idempotency.
+* **Submit scores** -- a player's best score stands, so a worse run never lowers the board.
+  An optional `idempotency_key` discards a submission whose key has already been seen.
 * **Read the top X** players for a game, paginated.
 * **Read a player's surroundings** -- their rank plus neighbours above and below.
 * **All-time, daily and weekly** boards are maintained from a single submission.

@@ -271,3 +271,36 @@ async def test_openapi_schema_is_served(client: AsyncClient) -> None:
     schema = (await client.get("/openapi.json")).json()
     assert schema["info"]["title"] == "Global Gaming Leaderboard API"
     assert "/v1/games/{game_id}/scores" in schema["paths"]
+
+
+async def test_submit_contract_is_exactly_these_fields(client: AsyncClient) -> None:
+    """Pin the public request shape.
+
+    /docs is generated from this schema, so a field added or removed without a
+    deliberate decision shows up here rather than in front of a user.
+    """
+    schema = (await client.get("/openapi.json")).json()
+    request = schema["components"]["schemas"]["SubmitScoreRequest"]
+    assert set(request["properties"]) == {
+        "user_id",
+        "score",
+        "display_name",
+        "idempotency_key",
+    }
+    assert set(request["required"]) == {"user_id", "score"}
+
+
+async def test_api_description_matches_the_implemented_semantics(
+    client: AsyncClient,
+) -> None:
+    """The landing text on /docs is a contract too, and it drifts silently.
+
+    The service previously advertised score modes on /docs for a full release
+    after they had been removed from the code, because prose does not fail a
+    type check.
+    """
+    description = (await client.get("/openapi.json")).json()["info"]["description"]
+    for removed in ("absolute", "increment"):
+        assert removed not in description.lower(), (
+            f"/docs still advertises the removed '{removed}' score mode"
+        )
