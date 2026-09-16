@@ -60,15 +60,25 @@ CTX=$(curl -fsS "${BASE}/v1/games/${GAME}/users/carol/context?radius=1")
 ok "context returns neighbours on both sides"
 
 echo "-> idempotent retry"
-for _ in 1 2; do
-  curl -fsS -X POST "${BASE}/v1/games/${GAME}/scores" \
-    -H 'content-type: application/json' \
-    -d '{"user_id":"erin","score":10,"mode":"increment","idempotency_key":"smoke-1"}' \
-    >/dev/null
-done
+# The replay carries a *better* score on purpose: under best-score semantics a
+# duplicate of the same value would be absorbed harmlessly and prove nothing.
+# Erin can only still be on 10 if the idempotency key gated the write.
+curl -fsS -X POST "${BASE}/v1/games/${GAME}/scores" \
+  -H 'content-type: application/json' \
+  -d '{"user_id":"erin","score":10,"idempotency_key":"smoke-1"}' >/dev/null
+curl -fsS -X POST "${BASE}/v1/games/${GAME}/scores" \
+  -H 'content-type: application/json' \
+  -d '{"user_id":"erin","score":999,"idempotency_key":"smoke-1"}' >/dev/null
 [ "$(curl -fsS "${BASE}/v1/games/${GAME}/users/erin" | jq -r .score)" = "10" ] \
-  || fail "duplicate submission was applied twice"
-ok "repeated idempotency key applied once"
+  || fail "replayed idempotency key was not suppressed"
+ok "replayed idempotency key suppressed the write"
+
+curl -fsS -X POST "${BASE}/v1/games/${GAME}/scores" \
+  -H 'content-type: application/json' \
+  -d '{"user_id":"erin","score":999,"idempotency_key":"smoke-2"}' >/dev/null
+[ "$(curl -fsS "${BASE}/v1/games/${GAME}/users/erin" | jq -r .score)" = "999" ] \
+  || fail "a fresh idempotency key should apply normally"
+ok "fresh idempotency key applied normally"
 
 echo "-> validation"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/v1/games/${GAME}/scores" \

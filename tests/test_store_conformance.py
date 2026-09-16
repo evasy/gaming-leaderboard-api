@@ -12,7 +12,6 @@ import asyncio
 
 import pytest
 
-from app.models import ScoreMode
 from app.store.base import LeaderboardStore
 
 GAME = "space-invaders"
@@ -26,7 +25,6 @@ async def _seed(store: LeaderboardStore, scores: dict[str, int]) -> None:
             bucket=BUCKET,
             user_id=user_id,
             score=score,
-            mode=ScoreMode.ABSOLUTE,
             ttl_seconds=None,
         )
 
@@ -45,7 +43,6 @@ async def test_first_submission_ranks_first(store: LeaderboardStore) -> None:
         bucket=BUCKET,
         user_id="alice",
         score=100,
-        mode=ScoreMode.BEST,
         ttl_seconds=None,
     )
     assert outcome.score == 100
@@ -115,19 +112,16 @@ async def test_offset_past_the_end_returns_empty_page_with_real_total(
 
 
 @pytest.mark.parametrize(
-    ("mode", "existing", "incoming", "expected"),
+    ("existing", "incoming", "expected"),
     [
-        (ScoreMode.BEST, 100, 150, 150),  # improvement is kept
-        (ScoreMode.BEST, 100, 50, 100),  # regression is ignored
-        (ScoreMode.BEST, 100, 100, 100),  # equal is a no-op
-        (ScoreMode.ABSOLUTE, 100, 50, 50),  # authoritative overwrite, even downward
-        (ScoreMode.INCREMENT, 100, 50, 150),  # accumulation
-        (ScoreMode.INCREMENT, 100, -30, 70),  # penalties are deltas too
+        (100, 150, 150),  # an improvement is kept
+        (100, 50, 100),  # a worse run never costs you your high score
+        (100, 100, 100),  # resubmitting the same score changes nothing
+        (0, 0, 0),  # zero is a real score, not a missing one
     ],
 )
-async def test_score_modes(
+async def test_best_score_stands(
     store: LeaderboardStore,
-    mode: ScoreMode,
     existing: int,
     incoming: int,
     expected: int,
@@ -138,7 +132,6 @@ async def test_score_modes(
         bucket=BUCKET,
         user_id="alice",
         score=incoming,
-        mode=mode,
         ttl_seconds=None,
     )
     assert outcome.score == expected
@@ -146,7 +139,7 @@ async def test_score_modes(
     assert outcome.updated is (expected != existing)
 
 
-async def test_best_mode_is_safe_under_concurrent_submissions(
+async def test_concurrent_submissions_do_not_lose_the_winning_score(
     store: LeaderboardStore,
 ) -> None:
     """A read-modify-write race must not lose the winning score.
@@ -161,7 +154,6 @@ async def test_best_mode_is_safe_under_concurrent_submissions(
                 bucket=BUCKET,
                 user_id="alice",
                 score=score,
-                mode=ScoreMode.BEST,
                 ttl_seconds=None,
             )
             for score in (10, 900, 250, 40, 700)
@@ -170,27 +162,6 @@ async def test_best_mode_is_safe_under_concurrent_submissions(
     entry = await store.get_entry(game_id=GAME, bucket=BUCKET, user_id="alice")
     assert entry is not None
     assert entry.score == 900
-
-
-async def test_increment_mode_totals_correctly_under_concurrency(
-    store: LeaderboardStore,
-) -> None:
-    await asyncio.gather(
-        *[
-            store.submit(
-                game_id=GAME,
-                bucket=BUCKET,
-                user_id="alice",
-                score=1,
-                mode=ScoreMode.INCREMENT,
-                ttl_seconds=None,
-            )
-            for _ in range(50)
-        ]
-    )
-    entry = await store.get_entry(game_id=GAME, bucket=BUCKET, user_id="alice")
-    assert entry is not None
-    assert entry.score == 50
 
 
 async def test_get_entry_rank_matches_the_board(store: LeaderboardStore) -> None:
@@ -260,7 +231,6 @@ async def test_remove_player_erases_them_from_every_bucket(store: LeaderboardSto
             bucket=bucket,
             user_id="alice",
             score=100,
-            mode=ScoreMode.BEST,
             ttl_seconds=None,
         )
     removed = await store.remove_player(game_id=GAME, user_id="alice")
@@ -291,7 +261,6 @@ async def test_games_are_discoverable(store: LeaderboardStore) -> None:
         bucket=BUCKET,
         user_id="bob",
         score=5,
-        mode=ScoreMode.BEST,
         ttl_seconds=None,
     )
     assert sorted(await store.list_games()) == ["pong", GAME]
@@ -303,7 +272,6 @@ async def test_buckets_are_isolated_from_each_other(store: LeaderboardStore) -> 
         bucket="all",
         user_id="alice",
         score=100,
-        mode=ScoreMode.BEST,
         ttl_seconds=None,
     )
     assert await store.get_entry(game_id=GAME, bucket="d:2026-01-01", user_id="alice") is None

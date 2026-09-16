@@ -64,7 +64,7 @@ sequenceDiagram
             T-->>S: false  →  return current standings, no write
         end
         loop all_time, daily, weekly
-            S->>T: submit(bucket, user, score, mode)
+            S->>T: submit(bucket, user, score)
             T->>D: EVALSHA (atomic read-modify-write + ZCOUNT)
             D-->>T: previous, new, updated, players_above
         end
@@ -86,7 +86,7 @@ and the product gets daily/weekly/all-time boards for free.
 
 ```mermaid
 flowchart TD
-    submit["POST /scores<br/>user=alice score=900 mode=best"]
+    submit["POST /scores<br/>user=alice score=900"]
     submit --> idem{"idempotency_key<br/>already seen?"}
     idem -- yes --> noop["Return current standings<br/>(no write — retry-safe)"]
     idem -- no --> fan["Fan out to window buckets"]
@@ -95,7 +95,7 @@ flowchart TD
     fan --> d["lb:{game}:board:d:2026-09-16<br/>TTL 8 days"]
     fan --> w["lb:{game}:board:w:2026-W38<br/>TTL 35 days"]
 
-    a --> lua["Lua: ZSCORE → apply mode → ZADD → ZCOUNT"]
+    a --> lua["Lua: ZSCORE → keep the better → ZADD → ZCOUNT"]
     d --> lua
     w --> lua
     lua --> resp["201 with score + rank per window"]
@@ -147,7 +147,25 @@ count, and durability is weaker than a relational database. For leaderboard
 data — reconstructible from the game's own event history — that is the right
 side of the trade.
 
-### 5.2 Competition ranking, computed rather than stored
+### 5.2 One scoring rule: the best score stands
+
+The API takes a score and keeps the higher of it and what is already on record.
+An API that additionally offered `absolute` (overwrite) and `increment`
+(accumulate) modes was considered and rejected. Three ways to mutate a score is
+three sets of edge cases in the store, in validation and in the tests, and
+neither extra mode is required to rank players by score.
+
+The single rule buys a property worth having — the write is **commutative and
+idempotent**. Submissions can arrive out of order, or twice, and the board
+converges to the same answer. That is what makes retries safe and what keeps
+the Lua script short enough to read in one sitting.
+
+**Trade-off accepted:** accumulating seasons and battle passes want
+`increment`, and an authoritative correction from the game server wants
+`absolute`. Both would be additive changes to `submit()` behind a request
+field; neither is needed to rank players by score.
+
+### 5.3 Competition ranking, computed rather than stored
 
 Rank is **derived** on read (`ZCOUNT` of strictly-higher scores, plus one),
 never persisted. Storing a rank column would mean updating up to `N` rows on
@@ -157,7 +175,7 @@ Ties **share** the better rank and the next distinct score skips ahead — `1, 2
 2, 4`, not `1, 2, 2, 3`. This is what players expect from a scoreboard, and it
 means a player's rank cannot change just because someone else tied them.
 
-### 5.3 Deterministic tie ordering
+### 5.4 Deterministic tie ordering
 
 Within equal scores, entries are ordered by **descending user id**. The choice
 is arbitrary; the *determinism* is not. An unstable intra-tie order lets a
@@ -165,25 +183,26 @@ player appear on two consecutive pages, or on neither, as a client paginates.
 The in-memory backend reproduces Redis's reverse-lexicographic ordering exactly
 so the two backends are interchangeable.
 
-### 5.4 Atomic read-modify-write in Lua
+### 5.5 Atomic read-modify-write in Lua
 
-`best` mode is a compare-and-set. Doing it as client-side `ZSCORE` then `ZADD`
-is a lost-update race: two submissions for the same player interleave and the
-higher score can be overwritten. The Lua script makes it atomic server-side and
-collapses four round trips into one. `test_best_mode_is_safe_under_concurrent_submissions`
-fires five concurrent submissions and asserts the maximum survives.
+Keeping a player's best score is a compare-and-set. Doing it as client-side
+`ZSCORE` then `ZADD` is a lost-update race: two submissions for the same player
+interleave and the higher score can be overwritten by the lower one. The Lua
+script makes it atomic server-side and collapses four round trips into one.
+`test_concurrent_submissions_do_not_lose_the_winning_score` fires five
+concurrent submissions and asserts the maximum survives.
 
-> Redis's `ZADD GT` would handle `best` alone, but not `increment`, not the
-> "what was the previous score" response field, and not the rank in the same
-> round trip.
+> Redis's `ZADD ... GT` would handle the comparison on its own, but it reports
+> neither the previous score nor the resulting rank, and the API returns both.
+> The script is one round trip for all three answers.
 
-### 5.5 A pluggable store, and why there are two
+### 5.6 A pluggable store, and why there are two
 
 ```mermaid
 classDiagram
     class LeaderboardStore {
         <<abstract>>
-        +submit(game, bucket, user, score, mode, ttl)
+        +submit(game, bucket, user, score, ttl)
         +top(game, bucket, limit, offset)
         +get_entry(game, bucket, user)
         +context(game, bucket, user, radius)
@@ -211,13 +230,20 @@ state is per-process, so it survives neither a restart nor a second replica.
 That is enforced by configuration defaults, not by hope: production sets
 `LEADERBOARD_STORE_BACKEND=redis`, and `/readyz` reports which backend is live.
 
-### 5.6 Idempotent submissions
+### 5.7 Idempotent submissions
 
-Mobile clients retry. Without a guard, a retried `increment` double-counts. An
-optional `idempotency_key` is claimed with `SET NX EX`; a replay returns the
-player's current standing with `deduplicated: true` and performs no write.
+Mobile clients retry, and queues redeliver. Best-score semantics already make
+an identical retry harmless, so the key earns its place on the cases that rule
+does not cover: a retry whose payload has drifted, or a redelivery that would
+otherwise land a second, different write. The key is claimed with `SET NX EX`;
+a replay returns the player's current standing with `deduplicated: true` and
+performs no write at all.
 
-### 5.7 Redis Cluster readiness
+**Trade-off accepted:** this is a TTL-bounded guard (1 day), not a durable
+exactly-once log. A replay arriving after the window applies normally — which
+for a leaderboard is harmless, because the scoring rule is itself idempotent.
+
+### 5.8 Redis Cluster readiness
 
 Keys are namespaced `lb:{game}:...`. The braces are a Redis Cluster **hash
 tag**: every key for one game hashes to the same slot, so multi-key scripts stay

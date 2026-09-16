@@ -21,7 +21,6 @@ from app.models import (
     GameSummary,
     LeaderboardEntry,
     LeaderboardPage,
-    ScoreMode,
     SubmitScoreRequest,
     SubmitScoreResponse,
     UserContextResponse,
@@ -59,17 +58,8 @@ class LeaderboardService:
             weekly=self._settings.weekly_ttl_seconds,
         )
 
-    def _validate_score(self, score: int, mode: ScoreMode) -> None:
+    def _validate_score(self, score: int) -> None:
         s = self._settings
-        if mode is ScoreMode.INCREMENT:
-            # A delta may legitimately be negative (a penalty), but it must not
-            # be large enough to push a total outside the configured domain.
-            if abs(score) > s.max_score:
-                raise ValidationError(
-                    f"increment magnitude must be <= {s.max_score}, got {score}",
-                    field="score",
-                )
-            return
         if not (s.min_score <= score <= s.max_score):
             raise ValidationError(
                 f"score must be between {s.min_score} and {s.max_score}, got {score}",
@@ -98,8 +88,12 @@ class LeaderboardService:
     async def submit_score(
         self, *, game_id: str, payload: SubmitScoreRequest
     ) -> list[SubmitScoreResponse]:
-        """Apply one submission to every window and report the new standing."""
-        self._validate_score(payload.score, payload.mode)
+        """Record one submission on every window and report the new standing.
+
+        A player's best score stands, so a worse score is accepted but leaves
+        the board unchanged (`updated: false`).
+        """
+        self._validate_score(payload.score)
 
         if payload.idempotency_key:
             fresh = await self._store.claim_idempotency_key(
@@ -116,7 +110,7 @@ class LeaderboardService:
                     user_id=payload.user_id,
                     idempotency_key=payload.idempotency_key,
                 )
-                score_submissions_total.labels(game_id, payload.mode.value, "deduplicated").inc()
+                score_submissions_total.labels(game_id, "deduplicated").inc()
                 return await self._current_standings(game_id, payload.user_id)
 
         if payload.display_name:
@@ -133,7 +127,6 @@ class LeaderboardService:
                     bucket=self._bucket(window),
                     user_id=payload.user_id,
                     score=payload.score,
-                    mode=payload.mode,
                     ttl_seconds=self._ttl(window),
                 ),
             )
@@ -151,13 +144,12 @@ class LeaderboardService:
 
         all_time = responses[0]
         score_submissions_total.labels(
-            game_id, payload.mode.value, "applied" if all_time.updated else "unchanged"
+            game_id, "applied" if all_time.updated else "unchanged"
         ).inc()
         logger.info(
             "score_submitted",
             game_id=game_id,
             user_id=payload.user_id,
-            mode=payload.mode.value,
             score=all_time.score,
             rank=all_time.rank,
             updated=all_time.updated,

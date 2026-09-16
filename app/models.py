@@ -6,7 +6,6 @@ edge, before it can reach the store.
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -28,20 +27,16 @@ Identifier = Annotated[
 DisplayName = Annotated[str, StringConstraints(min_length=1, max_length=64, strip_whitespace=True)]
 
 
-class ScoreMode(StrEnum):
-    """How an incoming score combines with the score already on record."""
-
-    BEST = "best"  # keep the higher of the two (default; arcade semantics)
-    ABSOLUTE = "absolute"  # overwrite unconditionally (authoritative resync)
-    INCREMENT = "increment"  # add to the running total (accumulating seasons)
-
-
 class SubmitScoreRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: Identifier
-    score: int = Field(description="Score value. Bounds are enforced against service config.")
-    mode: ScoreMode = ScoreMode.BEST
+    score: int = Field(
+        description=(
+            "The score achieved. A player's best score is what stands: submitting a worse "
+            "score leaves the board unchanged."
+        )
+    )
     display_name: DisplayName | None = Field(
         default=None, description="Optional human-readable name shown on the board."
     )
@@ -49,8 +44,9 @@ class SubmitScoreRequest(BaseModel):
         default=None,
         max_length=128,
         description=(
-            "Optional client-supplied key. Repeating a submission with the same key is a no-op, "
-            "which makes retries from flaky mobile networks safe."
+            "Optional client-supplied key. A submission whose key has already been seen is "
+            "discarded, giving the write exactly-once semantics for a given attempt rather "
+            "than relying on the scoring rule to be self-correcting."
         ),
     )
 
@@ -69,7 +65,9 @@ class SubmitScoreResponse(BaseModel):
     score: int = Field(description="The player's score after applying the submission.")
     previous_score: int | None = None
     rank: int
-    updated: bool = Field(description="False when the submission did not change the stored score.")
+    updated: bool = Field(
+        description="False when the submission did not beat the player's existing score."
+    )
     deduplicated: bool = Field(
         default=False, description="True when this was a replay of a known idempotency key."
     )

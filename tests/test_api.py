@@ -76,7 +76,8 @@ async def test_get_single_user_rank(client: AsyncClient) -> None:
     assert body == {"user_id": "alice", "display_name": "Alice A.", "score": 100, "rank": 2}
 
 
-async def test_best_mode_ignores_a_worse_score(client: AsyncClient) -> None:
+async def test_a_worse_score_is_accepted_but_changes_nothing(client: AsyncClient) -> None:
+    """A bad run never costs a player their high score."""
     await _submit(client, "alice", 500)
     windows = await _submit(client, "alice", 100)
     assert windows["all_time"]["score"] == 500
@@ -84,36 +85,44 @@ async def test_best_mode_ignores_a_worse_score(client: AsyncClient) -> None:
     assert windows["all_time"]["previous_score"] == 500
 
 
-async def test_increment_mode_accumulates(client: AsyncClient) -> None:
-    await _submit(client, "alice", 10, mode="increment")
-    windows = await _submit(client, "alice", 15, mode="increment")
-    assert windows["all_time"]["score"] == 25
+async def test_idempotency_key_suppresses_the_write(client: AsyncClient) -> None:
+    """A replayed key is discarded before it reaches the board.
 
-
-async def test_absolute_mode_can_lower_a_score(client: AsyncClient) -> None:
-    await _submit(client, "alice", 900)
-    windows = await _submit(client, "alice", 100, mode="absolute")
-    assert windows["all_time"]["score"] == 100
-
-
-async def test_idempotency_key_makes_a_retry_a_no_op(client: AsyncClient) -> None:
-    first = await _submit(client, "alice", 7, mode="increment", idempotency_key="req-1")
-    assert first["all_time"]["score"] == 7
+    The replay deliberately carries a *better* score than the original. Under
+    best-score semantics a duplicate of the same value would be absorbed
+    harmlessly and prove nothing, so the only way the board can still read 100
+    is if the idempotency key actually gated the write.
+    """
+    first = await _submit(client, "alice", 100, idempotency_key="req-1")
+    assert first["all_time"]["score"] == 100
 
     replay = await client.post(
         f"/v1/games/{GAME}/scores",
-        json={
-            "user_id": "alice",
-            "score": 7,
-            "mode": "increment",
-            "idempotency_key": "req-1",
-        },
+        json={"user_id": "alice", "score": 999, "idempotency_key": "req-1"},
     )
     assert replay.status_code == 201
     rows = {r["window"]: r for r in replay.json()}
     assert rows["all_time"]["deduplicated"] is True
-    # The crucial assertion: the increment was not applied twice.
-    assert (await client.get(f"/v1/games/{GAME}/users/alice")).json()["score"] == 7
+    assert rows["all_time"]["updated"] is False
+    assert (await client.get(f"/v1/games/{GAME}/users/alice")).json()["score"] == 100
+
+
+async def test_a_fresh_idempotency_key_is_applied(client: AsyncClient) -> None:
+    """The guard must reject replays without swallowing genuine submissions."""
+    await _submit(client, "alice", 100, idempotency_key="req-1")
+    windows = await _submit(client, "alice", 999, idempotency_key="req-2")
+    assert windows["all_time"]["score"] == 999
+    assert windows["all_time"]["deduplicated"] is False
+
+
+async def test_idempotency_keys_are_scoped_per_game(client: AsyncClient) -> None:
+    await _submit(client, "alice", 100, idempotency_key="shared")
+    response = await client.post(
+        "/v1/games/pong/scores",
+        json={"user_id": "alice", "score": 42, "idempotency_key": "shared"},
+    )
+    assert response.status_code == 201
+    assert {r["window"]: r for r in response.json()}["all_time"]["score"] == 42
 
 
 async def test_delete_user_removes_them_from_the_board(client: AsyncClient) -> None:
@@ -160,7 +169,7 @@ async def test_empty_leaderboard_is_200_not_404(client: AsyncClient) -> None:
         {"user_id": "bad id!", "score": 10},  # illegal characters
         {"user_id": "a" * 65, "score": 10},  # too long
         {"user_id": "alice", "score": "abc"},  # wrong type
-        {"user_id": "alice", "score": 10, "mode": "nope"},  # unknown mode
+        {"user_id": "alice", "score": 10, "display_name": ""},  # empty display name
         {"user_id": "alice", "score": 10, "extra": True},  # unexpected field
     ],
 )
@@ -180,7 +189,7 @@ async def test_score_outside_configured_bounds_is_rejected(client: AsyncClient) 
     assert response.json()["code"] == "validation_failed"
 
 
-async def test_negative_score_is_rejected_in_best_mode(client: AsyncClient) -> None:
+async def test_negative_score_is_rejected(client: AsyncClient) -> None:
     response = await client.post(f"/v1/games/{GAME}/scores", json={"user_id": "alice", "score": -5})
     assert response.status_code == 422
 

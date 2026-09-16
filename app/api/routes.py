@@ -52,10 +52,10 @@ WindowQuery = Annotated[
     status_code=status.HTTP_201_CREATED,
     summary="Submit a score",
     description=(
-        "Applies a score to the all-time, daily and weekly boards in one call and returns the "
-        "player's standing on each. `mode` selects how the value combines with any existing "
-        "score: `best` (default), `absolute`, or `increment`. Supplying `idempotency_key` makes "
-        "client retries safe."
+        "Records a score on the all-time, daily and weekly boards in one call and returns the "
+        "player's standing on each. A player's best score is what stands, so submitting a "
+        "worse score is accepted but leaves the board unchanged. Supplying an "
+        "`idempotency_key` discards a submission whose key has already been seen."
     ),
 )
 async def submit_score(

@@ -33,32 +33,28 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.core.errors import StoreUnavailableError
-from app.models import ScoreMode
 from app.store.base import Entry, LeaderboardStore, Page, SubmitOutcome, rank_page
 
-# Read-modify-write of a score must be atomic: two concurrent "best score"
-# submissions for the same player would otherwise race and lose one update.
-# Doing it server-side in Lua also collapses 4 round trips into 1.
+# Keeping a player's best score is a compare-and-set. Done from the client as
+# ZSCORE-then-ZADD it is a lost-update race: two submissions interleave and the
+# higher score can be overwritten by the lower one. Running it server-side in
+# Lua makes it atomic and collapses four round trips into one.
+#
+# ZADD ... GT would handle the comparison alone, but it reports neither the
+# previous score nor the resulting rank, both of which the API returns.
 _SUBMIT_LUA = """
 local key    = KEYS[1]
 local member = ARGV[1]
 local value  = tonumber(ARGV[2])
-local mode   = ARGV[3]
-local ttl    = tonumber(ARGV[4])
+local ttl    = tonumber(ARGV[3])
 
 local prev = redis.call('ZSCORE', key, member)
 local new_score
 
-if mode == 'increment' then
-  new_score = (prev and tonumber(prev) or 0) + value
-elseif mode == 'absolute' then
+if prev == false then
   new_score = value
 else
-  if prev == false then
-    new_score = value
-  else
-    new_score = math.max(tonumber(prev), value)
-  end
+  new_score = math.max(tonumber(prev), value)
 end
 
 local updated = 0
@@ -119,14 +115,13 @@ class RedisLeaderboardStore(LeaderboardStore):
         bucket: str,
         user_id: str,
         score: int,
-        mode: ScoreMode,
         ttl_seconds: int | None,
     ) -> SubmitOutcome:
         key = self._board_key(game_id, bucket)
         try:
             raw: list[Any] = await self._submit(
                 keys=[key],
-                args=[user_id, score, mode.value, ttl_seconds or 0],
+                args=[user_id, score, ttl_seconds or 0],
             )
             # Registering the game/bucket is bookkeeping for listings and
             # cascade deletes; it is intentionally outside the atomic section.

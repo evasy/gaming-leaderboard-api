@@ -105,7 +105,6 @@ POST /v1/games/space-invaders/scores
 {
   "user_id": "alice",
   "score": 9000,
-  "mode": "best",
   "display_name": "Alice A.",
   "idempotency_key": "match-8f21c4"
 }
@@ -115,18 +114,20 @@ POST /v1/games/space-invaders/scores
 |---|---|---|
 | `user_id` | yes | 1–64 chars, `[A-Za-z0-9._-]`, must start alphanumeric |
 | `score` | yes | Integer within the configured bounds |
-| `mode` | no | `best` (default), `absolute`, or `increment` |
 | `display_name` | no | 1–64 chars, shown on the board |
-| `idempotency_key` | no | Repeat submissions with the same key are applied once |
+| `idempotency_key` | no | A submission whose key has already been seen is discarded |
 
-**Score modes**
+**A player's best score is what stands.** Submitting a worse score is accepted
+and returns `200`-shaped data with `updated: false`; it does not lower the
+board. A bad run never costs a player their high score, and a client that
+replays a submission cannot corrupt the standing.
 
-- **`best`** — keep the higher of the old and new score. Arcade semantics; a bad
-  run never costs you your high score.
-- **`absolute`** — overwrite unconditionally, including downward. For an
-  authoritative resync from the game server, or a correction.
-- **`increment`** — add to a running total. For accumulating seasons and battle
-  passes. Negative values are allowed, so penalties are expressible.
+**`idempotency_key`** gives a submission exactly-once semantics. Best-score
+semantics already make an identical retry harmless, but the key also suppresses
+a retry whose payload differs — a client that resends with a mutated score, or
+a queue that redelivers, cannot land a second write under the same key. The
+claim is held for `LEADERBOARD_IDEMPOTENCY_TTL_SECONDS` (1 day by default) via
+`SET NX EX`.
 
 Returns `201` with the player's standing on **each** window:
 
@@ -235,7 +236,7 @@ line for that request. Send your own `X-Request-ID` and it is preserved.
 ```
 HTTP  →  routes (app/api)      thin; HTTP in, HTTP out
       →  schemas (app/models)  validation at the edge
-      →  service (app/service) windows, score modes, idempotency, bounds
+      →  service (app/service) windows, idempotency, score bounds
       →  store  (app/store)    persistence only
 ```
 
@@ -294,7 +295,7 @@ The suite has three layers:
 | File | Layer | What it pins down |
 |---|---|---|
 | `tests/test_units.py` | pure functions | window bucketing (incl. UTC rollover, ISO week/year boundaries), competition-rank assignment, config parsing |
-| `tests/test_store_conformance.py` | storage | ranking, ties, all three score modes, pagination, context clamping, deletion, idempotency, concurrency — **run against every backend** |
+| `tests/test_store_conformance.py` | storage | ranking, ties, best-score semantics, pagination, context clamping, deletion, idempotency, concurrency — **run against every backend** |
 | `tests/test_api.py` | HTTP | status codes, payload shapes, validation rejections, `problem+json` contract, health and metrics endpoints |
 
 Redis-backed parameters are **skipped**, not failed, when no Redis is reachable
@@ -307,7 +308,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 make test
 ```
 
-Worth a look if you are reviewing: `test_best_mode_is_safe_under_concurrent_submissions`
+Worth a look if you are reviewing: `test_concurrent_submissions_do_not_lose_the_winning_score`
 fires five concurrent submissions at one player and asserts the highest score
 survives — the race that motivated the Lua script.
 
@@ -331,7 +332,7 @@ out of rotation, not restart it in a loop.
 `request_id`. Set `LEADERBOARD_LOG_FORMAT=console` locally for readable output.
 
 ```json
-{"event":"score_submitted","game_id":"space-invaders","user_id":"alice","mode":"best","score":9000,"rank":1,"updated":true,"request_id":"0f3c…","level":"info","timestamp":"2026-09-16T17:42:11.004Z"}
+{"event":"score_submitted","game_id":"space-invaders","user_id":"alice","score":9000,"rank":1,"updated":true,"request_id":"0f3c…","level":"info","timestamp":"2026-09-16T17:42:11.004Z"}
 ```
 
 **Metrics.** Prometheus text at `/metrics`:
@@ -340,7 +341,7 @@ out of rotation, not restart it in a loop.
 |---|---|---|
 | `leaderboard_http_requests_total` | counter | `method`, `route`, `status` |
 | `leaderboard_http_request_duration_seconds` | histogram | `method`, `route` |
-| `leaderboard_score_submissions_total` | counter | `game_id`, `mode`, `result` |
+| `leaderboard_score_submissions_total` | counter | `game_id`, `result` |
 | `leaderboard_store_operation_duration_seconds` | histogram | `backend`, `operation` |
 
 Routes are labelled by **template** (`/v1/games/{game_id}/scores`), not by raw
@@ -412,7 +413,7 @@ repository secrets; the `deploy` job then runs on every green push to `main`.
 app/
   main.py               application factory, middleware, lifespan
   models.py             request/response schemas and validation
-  service.py            use cases: windows, score modes, idempotency
+  service.py            use cases: windows, idempotency, score bounds
   api/
     routes.py           leaderboard endpoints
     health.py           healthz / readyz / metrics

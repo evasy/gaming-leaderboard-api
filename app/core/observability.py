@@ -34,8 +34,8 @@ http_request_duration_seconds = Histogram(
 )
 score_submissions_total = Counter(
     "leaderboard_score_submissions_total",
-    "Score submissions, by game and mode.",
-    ["game_id", "mode", "result"],
+    "Score submissions, by game and outcome.",
+    ["game_id", "result"],
 )
 store_operation_duration_seconds = Histogram(
     "leaderboard_store_operation_duration_seconds",

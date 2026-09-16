@@ -25,7 +25,6 @@ from typing import Any
 
 from sortedcontainers import SortedList
 
-from app.models import ScoreMode
 from app.store.base import Entry, LeaderboardStore, Page, SubmitOutcome, rank_page
 
 
@@ -145,7 +144,6 @@ class MemoryLeaderboardStore(LeaderboardStore):
         bucket: str,
         user_id: str,
         score: int,
-        mode: ScoreMode,
         ttl_seconds: int | None,
     ) -> SubmitOutcome:
         async with self._lock:
@@ -155,12 +153,7 @@ class MemoryLeaderboardStore(LeaderboardStore):
                 board.expires_at = time.time() + ttl_seconds
 
             previous = board.scores.get(user_id)
-            if mode is ScoreMode.INCREMENT:
-                new_score = (previous or 0) + score
-            elif mode is ScoreMode.ABSOLUTE:
-                new_score = score
-            else:  # BEST
-                new_score = score if previous is None else max(previous, score)
+            new_score = score if previous is None else max(previous, score)
 
             updated = previous != new_score
             if updated or previous is None:

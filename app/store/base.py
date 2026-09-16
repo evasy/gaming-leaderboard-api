@@ -16,8 +16,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.models import ScoreMode
-
 
 @dataclass(frozen=True, slots=True)
 class Entry:
@@ -54,10 +52,13 @@ class LeaderboardStore(ABC):
         bucket: str,
         user_id: str,
         score: int,
-        mode: ScoreMode,
         ttl_seconds: int | None,
     ) -> SubmitOutcome:
-        """Apply a score to one bucket and return the resulting standing."""
+        """Record a score in one bucket, keeping the better of old and new.
+
+        Returns the resulting standing. Must be atomic: a concurrent submission
+        for the same player may not clobber a higher score.
+        """
 
     @abstractmethod
     async def set_display_name(self, *, game_id: str, user_id: str, display_name: str) -> None:
