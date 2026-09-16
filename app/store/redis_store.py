@@ -27,7 +27,7 @@ moved onto a clustered deployment.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -250,7 +250,10 @@ class RedisLeaderboardStore(LeaderboardStore):
 
             start = max(0, int(index) - radius)
             stop = int(index) + radius
-            rows_raw = await self._redis.zrevrange(key, start, stop, withscores=True)
+            rows_raw = cast(
+                "list[tuple[Any, Any]]",
+                await self._redis.zrevrange(key, start, stop, withscores=True),
+            )
             if not rows_raw:
                 return None
             rows = [(_text(m), _as_int(s)) for m, s in rows_raw]
@@ -284,7 +287,7 @@ class RedisLeaderboardStore(LeaderboardStore):
             return False
 
     async def close(self) -> None:
-        await self._redis.aclose()  # type: ignore[attr-defined]
+        await self._redis.aclose()
 
 
 def _text(value: Any) -> str:
