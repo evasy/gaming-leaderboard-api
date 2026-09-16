@@ -391,8 +391,15 @@ doctl apps list
 ./scripts/smoke.sh https://leaderboard-api-juove.ondigitalocean.app
 ```
 
-The spec ([`.do/app.yaml`](.do/app.yaml)) autoscales from two instances to six
-on CPU, binds the managed Redis DSN, and gates rollout traffic on `/readyz`.
+The spec ([`.do/app.yaml`](.do/app.yaml)) runs two instances, binds the managed
+Valkey DSN, and gates rollout traffic on `/readyz`. CPU-metric autoscaling is
+the preferred configuration but App Platform allows it only on dedicated
+instance slugs; the spec documents that upgrade path inline.
+
+`deploy_on_push` is deliberately **off**. App Platform's native auto-deploy
+fires in parallel with CI, so a commit failing its tests would still ship.
+Deployment instead runs from the `deploy` job in CI, after the full matrix and
+the image smoke test pass.
 
 For continuous deployment, add `DIGITALOCEAN_ACCESS_TOKEN` and `DO_APP_ID` as
 repository secrets; the `deploy` job then runs on every green push to `main`.

@@ -248,12 +248,16 @@ flowchart LR
     b --> gate
     gate -- no --> stop["deploy blocked"]
     gate -- yes --> do["doctl apps create-deployment"]
-    do --> ap["App Platform<br/>rolling deploy, 2+ instances"]
+    do --> ap["App Platform<br/>rolling deploy, 2 instances"]
     ap --> hc["/readyz gates traffic"]
 ```
 
 Health checks target `/readyz`, which fails when Redis is unreachable — so a
 broken instance never receives traffic during a rollout.
+
+App Platform's own `deploy_on_push` is switched off on purpose: it triggers the
+moment a commit lands, concurrently with CI, which would let a failing commit
+reach production. CI is the only path that can deploy.
 
 ## 8. Scaling path
 
@@ -262,7 +266,7 @@ Roughly where each bottleneck appears, and what to do about it.
 | Scale | Bottleneck | Response |
 |---|---|---|
 | ~1k rps | none | 2 instances, single Redis |
-| ~10k rps | API CPU | autoscale to 6 instances (already configured) |
+| ~10k rps | API CPU | scale out to ~6 instances; CPU autoscaling needs a dedicated slug, spec'd inline |
 | ~50k rps reads | Redis CPU | add Redis read replicas; serve `top` from replicas, keep writes on the primary |
 | Hot top-10 | repeated identical reads | cache the first page for 1–2 s; the board is a leaderboard, not a ledger |
 | Millions of players/game | single-node memory | shard by `game_id` (hash tags already permit it) |
